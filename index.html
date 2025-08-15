@@ -15,17 +15,15 @@
 </head>
 <body>
   <div id="toolbar">
-    <button id="btnABS1">ABS1'a bağlan</button>
-    <button id="btnABS2">ABS2'ye bağlan</button>
-    <button id="btnABS3">ABS3'e bağlan</button>
+    <button id="connectAllBtn">Tüm Cihazlara Bağlan</button>
     <span class="pill" id="status">Hazır</span>
     <div id="log">RSSI: - / - / -</div>
   </div>
   <canvas id="canvas"></canvas>
 
   <script>
-  // --- Kullanıcı ayarları (senin koordinatların ve ölçek) ---
-  const scaleFactor = 2;
+  // --- Kullanıcı ayarları ---
+  const scaleFactor = 1; // Küçültülmüş boyut
   const absCoords = {
     ABS1: { x: 0,   y: 0   },
     ABS2: { x: 280, y: 0   },
@@ -51,19 +49,19 @@
   window.addEventListener('resize', resize);
   resize();
 
-  // Haritayı ortalamak için ofset (Python'daki mantıkla benzer)
+  // Haritayı ortalamak için ofset
   function getOffsets() {
     const xOffset = Math.floor(canvas.width / 2 - 400);
     const yOffset = Math.floor(canvas.height / 2 - 400);
     return { xOffset, yOffset };
   }
 
-  // RSSI -> mesafe (senin formül)
+  // RSSI -> mesafe
   function rssiToDistance(rssi, A = -30, n = 2) {
     return Math.pow(10, (A - rssi) / (10 * n));
   }
 
-  // Trilaterasyon: 2x2 lineer denklem çözümü (Python'daki A,b ile aynı)
+  // Trilaterasyon hesabı
   function trilaterate(p1, p2, p3, d1, d2, d3) {
     const A00 = 2*(p2.x - p1.x), A01 = 2*(p2.y - p1.y);
     const A10 = 2*(p3.x - p2.x), A11 = 2*(p3.y - p2.y);
@@ -81,7 +79,6 @@
     const { xOffset, yOffset } = getOffsets();
     ctx.clearRect(0,0,canvas.width,canvas.height);
 
-    // ABS noktaları ve üçgen çizgileri
     const P = {};
     for (const name of targetNames) {
       const c = absCoords[name];
@@ -91,7 +88,6 @@
     }
 
     ctx.lineWidth = 2;
-
     ctx.beginPath();
     ctx.strokeStyle = '#d0d0d0';
     ctx.moveTo(P.ABS1.x, P.ABS1.y);
@@ -149,16 +145,13 @@
 
       const device = await navigator.bluetooth.requestDevice({
         filters: [{ name }],
-        // Reklam izlemek için bazı tarayıcılarda service izni gerekebilir:
-        optionalServices: [] // gerekirse ekle
+        optionalServices: []
       });
 
       devices[name] = device;
 
-      // Reklam paketlerini izleyip RSSI almak:
       if ('watchAdvertisements' in device) {
         device.addEventListener('advertisementreceived', (event) => {
-          // event.rssi ile mesafe tahmini
           rssiMap[name] = event.rssi;
           distances[name] = rssiToDistance(event.rssi);
           updateUI();
@@ -167,20 +160,22 @@
         await device.watchAdvertisements();
         statusEl.textContent = `${name} izleniyor`;
       } else {
-        alert(`${name}: watchAdvertisements desteklenmiyor. Chrome’da "Experimental Web Platform features" gerekebilir.`);
+        alert(`${name}: watchAdvertisements desteklenmiyor.`);
         statusEl.textContent = `watchAdvertisements yok`;
       }
     } catch (e) {
       console.error(e);
-      statusEl.textContent = `İptal/ Hata`;
+      statusEl.textContent = `İptal / Hata`;
     }
   }
 
-  document.getElementById('btnABS1').addEventListener('click', () => connectByName('ABS1'));
-  document.getElementById('btnABS2').addEventListener('click', () => connectByName('ABS2'));
-  document.getElementById('btnABS3').addEventListener('click', () => connectByName('ABS3'));
+  // Tek butonla 3 cihazı bağla
+  document.getElementById('connectAllBtn').addEventListener('click', async () => {
+    for (const name of targetNames) {
+      await connectByName(name);
+    }
+  });
 
-  // Ekranı tazele
   drawStatic();
   </script>
 </body>
