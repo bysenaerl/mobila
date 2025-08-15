@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BLE Trilaterasyon (Web)</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #toolbar { position:fixed; top:0; left:0; right:0; padding:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; background:#f7f7f7; border-bottom:1px solid #e5e5e5; z-index:10; }
+    #log { white-space:pre; font-size:14px; }
+    #canvas { position:fixed; top:56px; left:0; right:0; bottom:0; width:100%; height:calc(100% - 56px); background:#fff; touch-action:none; }
+    button { padding:8px 12px; border:1px solid #ccc; background:#fff; border-radius:8px; }
+    .pill { padding:4px 8px; background:#eee; border-radius:999px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="btnABS1">ABS1'a bağlan</button>
+    <button id="btnABS2">ABS2'ye bağlan</button>
+    <button id="btnABS3">ABS3'e bağlan</button>
+    <span class="pill" id="status">Hazır</span>
+    <div id="log">RSSI: - / - / -</div>
+  </div>
+  <canvas id="canvas"></canvas>
+
+  <script>
+  // --- Kullanıcı ayarları (senin koordinatların ve ölçek) ---
+  const scaleFactor = 2;
+  const absCoords = {
+    ABS1: { x: 0,   y: 0   },
+    ABS2: { x: 280, y: 0   },
+    ABS3: { x: 140, y: 242 }
+  };
+  const targetNames = ["ABS1","ABS2","ABS3"];
+
+  // --- Durum ---
+  const devices = { ABS1: null, ABS2: null, ABS3: null };
+  const rssiMap  = { ABS1: null, ABS2: null, ABS3: null };
+  const distances = { ABS1: null, ABS2: null, ABS3: null };
+
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+
+  function resize() {
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight - 56; // toolbar yüksekliği
+    drawStatic();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Haritayı ortalamak için ofset (Python'daki mantıkla benzer)
+  function getOffsets() {
+    const xOffset = Math.floor(canvas.width / 2 - 400);
+    const yOffset = Math.floor(canvas.height / 2 - 400);
+    return { xOffset, yOffset };
+  }
+
+  // RSSI -> mesafe (senin formül)
+  function rssiToDistance(rssi, A = -30, n = 2) {
+    return Math.pow(10, (A - rssi) / (10 * n));
+  }
+
+  // Trilaterasyon: 2x2 lineer denklem çözümü (Python'daki A,b ile aynı)
+  function trilaterate(p1, p2, p3, d1, d2, d3) {
+    const A00 = 2*(p2.x - p1.x), A01 = 2*(p2.y - p1.y);
+    const A10 = 2*(p3.x - p2.x), A11 = 2*(p3.y - p2.y);
+    const b0 = d1*d1 - d2*d2 - p1.x*p1.x + p2.x*p2.x - p1.y*p1.y + p2.y*p2.y;
+    const b1 = d2*d2 - d3*d3 - p2.x*p2.x + p3.x*p3.x - p2.y*p2.y + p3.y*p3.y;
+
+    const det = A00*A11 - A01*A10;
+    if (Math.abs(det) < 1e-6) return null;
+    const x = ( b0*A11 - b1*A01) / det;
+    const y = ( A00*b1 - A10*b0) / det;
+    return { x, y };
+  }
+
+  function drawStatic() {
+    const { xOffset, yOffset } = getOffsets();
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // ABS noktaları ve üçgen çizgileri
+    const P = {};
+    for (const name of targetNames) {
+      const c = absCoords[name];
+      const x = c.x * scaleFactor + xOffset;
+      const y = canvas.height - (c.y * scaleFactor + yOffset);
+      P[name] = {x,y};
+    }
+
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.strokeStyle = '#d0d0d0';
+    ctx.moveTo(P.ABS1.x, P.ABS1.y);
+    ctx.lineTo(P.ABS2.x, P.ABS2.y);
+    ctx.lineTo(P.ABS3.x, P.ABS3.y);
+    ctx.lineTo(P.ABS1.x, P.ABS1.y);
+    ctx.stroke();
+
+    for (const name of targetNames) {
+      const p = P[name];
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5, 0, Math.PI*2);
+      ctx.fill();
+      ctx.font = '14px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(name, p.x, p.y - 10);
+    }
+  }
+
+  function drawPosition(pos) {
+    drawStatic();
+    const { xOffset, yOffset } = getOffsets();
+    if (!pos) return;
+    const x = pos.x * scaleFactor + xOffset;
+    const y = canvas.height - (pos.y * scaleFactor + yOffset);
+    ctx.beginPath();
+    ctx.fillStyle = 'purple';
+    ctx.arc(x, y, 6, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  function updateUI() {
+    const r1 = rssiMap.ABS1, r2 = rssiMap.ABS2, r3 = rssiMap.ABS3;
+    logEl.textContent = `RSSI: ABS1=${r1 ?? '-'} dBm | ABS2=${r2 ?? '-'} dBm | ABS3=${r3 ?? '-'} dBm`;
+  }
+
+  function tryComputeAndDraw() {
+    if (distances.ABS1 && distances.ABS2 && distances.ABS3) {
+      const p1 = absCoords.ABS1, p2 = absCoords.ABS2, p3 = absCoords.ABS3;
+      const pos = trilaterate(p1, p2, p3, distances.ABS1, distances.ABS2, distances.ABS3);
+      drawPosition(pos);
+    } else {
+      drawStatic();
+    }
+  }
+
+  async function connectByName(name) {
+    if (!('bluetooth' in navigator)) {
+      alert('Bu tarayıcı Web Bluetooth desteklemiyor.');
+      return;
+    }
+    try {
+      statusEl.textContent = `${name} aranıyor...`;
+
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ name }],
+        // Reklam izlemek için bazı tarayıcılarda service izni gerekebilir:
+        optionalServices: [] // gerekirse ekle
+      });
+
+      devices[name] = device;
+
+      // Reklam paketlerini izleyip RSSI almak:
+      if ('watchAdvertisements' in device) {
+        device.addEventListener('advertisementreceived', (event) => {
+          // event.rssi ile mesafe tahmini
+          rssiMap[name] = event.rssi;
+          distances[name] = rssiToDistance(event.rssi);
+          updateUI();
+          tryComputeAndDraw();
+        });
+        await device.watchAdvertisements();
+        statusEl.textContent = `${name} izleniyor`;
+      } else {
+        alert(`${name}: watchAdvertisements desteklenmiyor. Chrome’da "Experimental Web Platform features" gerekebilir.`);
+        statusEl.textContent = `watchAdvertisements yok`;
+      }
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = `İptal/ Hata`;
+    }
+  }
+
+  document.getElementById('btnABS1').addEventListener('click', () => connectByName('ABS1'));
+  document.getElementById('btnABS2').addEventListener('click', () => connectByName('ABS2'));
+  document.getElementById('btnABS3').addEventListener('click', () => connectByName('ABS3'));
+
+  // Ekranı tazele
+  drawStatic();
+  </script>
+</body>
+</html>
